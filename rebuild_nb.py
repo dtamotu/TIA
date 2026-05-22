@@ -1,0 +1,327 @@
+import json
+
+path = r'C:\Users\David\Documents\2026\TIA\perceptron\mlp_mnist.ipynb'
+
+def md(cid, lines):
+    return {'id': cid, 'cell_type': 'markdown', 'metadata': {}, 'source': lines}
+
+def code(cid, lines):
+    return {'id': cid, 'cell_type': 'code', 'execution_count': None,
+            'metadata': {}, 'outputs': [], 'source': lines}
+
+cells = []
+
+cells.append(md('c00', [
+    '# Perceptron Multicapa en MNIST\n',
+    '### Desde cero (NumPy) y con GPU (PyTorch)\n',
+    '\n',
+    '**Arquitectura:** 784 - 256 - 128 - 10\n',
+    '\n',
+    '| Parte | Framework | Dispositivo | Objetivo |\n',
+    '|-------|-----------|-------------|----------|\n',
+    '| 1 | NumPy puro | CPU | Entender forward/backward |\n',
+    '| 2 | PyTorch | CPU + GPU | Ver el salto de rendimiento |\n',
+]))
+
+cells.append(md('c01', ['## 0. Librerias y datos']))
+
+cells.append(code('c02', [
+    'import numpy as np\n',
+    'import matplotlib.pyplot as plt\n',
+    'import time\n',
+    'import torchvision\n',
+    '\n',
+    '# Datos via torchvision (incluido con PyTorch, sin sklearn)\n',
+    'print("Descargando MNIST...")\n',
+    'raw = torchvision.datasets.MNIST("./data", train=True,  download=True)\n',
+    '_t  = torchvision.datasets.MNIST("./data", train=False, download=True)\n',
+    '\n',
+    'X_train = raw.data.numpy().reshape(-1, 784) / 255.0\n',
+    'y_train = raw.targets.numpy()\n',
+    'X_test  = _t.data.numpy().reshape(-1, 784)  / 255.0\n',
+    'y_test  = _t.targets.numpy()\n',
+    '\n',
+    'print(f"Train: {X_train.shape}  Test: {X_test.shape}")',
+]))
+
+cells.append(md('c03', [
+    '---\n',
+    '## Parte 1 -- MLP desde cero con NumPy (CPU)\n',
+    '\n',
+    '### Forward pass\n',
+    'z[l] = a[l-1] @ W[l] + b[l],   a[l] = sigmoid(z[l])\n',
+    '\n',
+    'La capa de salida usa **Softmax**.\n',
+    '\n',
+    '### Backward pass (regla de la cadena)\n',
+    '- delta_L = y_hat - y  (Softmax+CE, derivada exacta)\n',
+    '- delta_l = (delta_{l+1} @ W_{l+1}.T) * a_l * (1 - a_l)\n',
+    '- dW_l = a_{l-1}.T @ delta_l / m\n',
+]))
+
+cells.append(code('c04', [
+    'class MLP_NumPy:\n',
+    '    """MLP con forward/backward explicito. Sin frameworks."""\n',
+    '\n',
+    '    def __init__(self, dims):\n',
+    '        # Xavier init: escala por sqrt(1/fan_in)\n',
+    '        self.W = [np.random.randn(dims[i], dims[i+1]) * np.sqrt(1/dims[i])\n',
+    '                  for i in range(len(dims)-1)]\n',
+    '        self.b = [np.zeros((1, dims[i+1]))\n',
+    '                  for i in range(len(dims)-1)]\n',
+    '\n',
+    '    @staticmethod\n',
+    '    def sigmoid(z):\n',
+    '        return 1 / (1 + np.exp(-np.clip(z, -500, 500)))\n',
+    '\n',
+    '    @staticmethod\n',
+    '    def softmax(z):\n',
+    '        e = np.exp(z - z.max(axis=1, keepdims=True))\n',
+    '        return e / e.sum(axis=1, keepdims=True)\n',
+    '\n',
+    '    def forward(self, X):\n',
+    '        self.a = [X]\n',
+    '        for i, (W, b) in enumerate(zip(self.W, self.b)):\n',
+    '            z = self.a[-1] @ W + b\n',
+    '            is_last = (i == len(self.W) - 1)\n',
+    '            self.a.append(self.softmax(z) if is_last else self.sigmoid(z))\n',
+    '        return self.a[-1]\n',
+    '\n',
+    '    def cross_entropy(self, y_pred, y_true):\n',
+    '        Y = np.eye(10)[y_true]\n',
+    '        return -np.mean(np.sum(Y * np.log(y_pred + 1e-8), axis=1))\n',
+    '\n',
+    '    def backward(self, y_true, lr):\n',
+    '        m     = len(y_true)\n',
+    '        Y     = np.eye(10)[y_true]\n',
+    '        delta = self.a[-1] - Y\n',
+    '        for i in reversed(range(len(self.W))):\n',
+    '            dW = self.a[i].T @ delta / m\n',
+    '            db = delta.mean(axis=0, keepdims=True)\n',
+    '            if i > 0:\n',
+    '                da    = delta @ self.W[i].T\n',
+    '                delta = da * self.a[i] * (1 - self.a[i])\n',
+    '            self.W[i] -= lr * dW\n',
+    '            self.b[i] -= lr * db\n',
+    '\n',
+    '    def fit(self, X, y, epochs=20, batch_size=256, lr=0.1, X_val=None, y_val=None):\n',
+    '        hist = {"loss": [], "acc": [], "val_acc": []}\n',
+    '        m    = len(X)\n',
+    '        for epoch in range(1, epochs+1):\n',
+    '            idx = np.random.permutation(m)\n',
+    '            batch_losses = []\n',
+    '            for start in range(0, m, batch_size):\n',
+    '                sl    = idx[start:start+batch_size]\n',
+    '                y_hat = self.forward(X[sl])\n',
+    '                batch_losses.append(self.cross_entropy(y_hat, y[sl]))\n',
+    '                self.backward(y[sl], lr)\n',
+    '            loss = np.mean(batch_losses)\n',
+    '            acc  = self.accuracy(X, y)\n',
+    '            hist["loss"].append(loss)\n',
+    '            hist["acc"].append(acc)\n',
+    '            if X_val is not None:\n',
+    '                va = self.accuracy(X_val, y_val)\n',
+    '                hist["val_acc"].append(va)\n',
+    '                print(f"Epoca {epoch:2d}  loss={loss:.4f}  acc={acc:.4f}  val_acc={va:.4f}")\n',
+    '            else:\n',
+    '                print(f"Epoca {epoch:2d}  loss={loss:.4f}  acc={acc:.4f}")\n',
+    '        return hist\n',
+    '\n',
+    '    def accuracy(self, X, y):\n',
+    '        return np.mean(np.argmax(self.forward(X), axis=1) == y)',
+]))
+
+cells.append(code('c05', [
+    'np.random.seed(42)\n',
+    'mlp_np = MLP_NumPy([784, 256, 128, 10])\n',
+    '\n',
+    't0 = time.time()\n',
+    'hist_np = mlp_np.fit(\n',
+    '    X_train, y_train,\n',
+    '    epochs=20, batch_size=256, lr=0.1,\n',
+    '    X_val=X_test, y_val=y_test\n',
+    ')\n',
+    't_numpy = time.time() - t0\n',
+    'print(f"Tiempo NumPy (CPU): {t_numpy:.1f}s")',
+]))
+
+cells.append(code('c06', [
+    'fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))\n',
+    'ax1.plot(hist_np["loss"], "b-o", markersize=4)\n',
+    'ax1.set(title="Perdida (Cross-Entropy)", xlabel="Epoca", ylabel="Loss")\n',
+    'ax1.grid(alpha=.3)\n',
+    'ax2.plot(hist_np["acc"],     "b-o", markersize=4, label="Train")\n',
+    'ax2.plot(hist_np["val_acc"], "r-o", markersize=4, label="Test")\n',
+    'ax2.set(title="Accuracy", xlabel="Epoca")\n',
+    'ax2.grid(alpha=.3); ax2.legend()\n',
+    'plt.suptitle("MLP NumPy (CPU)", fontsize=13, fontweight="bold")\n',
+    'plt.tight_layout(); plt.show()',
+]))
+
+cells.append(md('c07', [
+    '---\n',
+    '## Parte 2 -- MLP con PyTorch (CPU + GPU)\n',
+    '\n',
+    'La misma arquitectura, con diferenciacion automatica y soporte GPU.\n',
+    '\n',
+    '**5 pasos del loop de entrenamiento:**\n',
+    '1. `zero_grad()` limpiar gradientes acumulados\n',
+    '2. `forward()` propagacion hacia adelante\n',
+    '3. `criterion()` calcular perdida\n',
+    '4. `backward()` autograd calcula todos los gradientes\n',
+    '5. `step()` actualizar pesos con el optimizador\n',
+]))
+
+cells.append(code('c08', [
+    'import torch\n',
+    'import torch.nn as nn\n',
+    'from torch.utils.data import TensorDataset, DataLoader\n',
+    '\n',
+    'device = torch.device("cuda" if torch.cuda.is_available() else "cpu")\n',
+    'print(f"Dispositivo: {device}")\n',
+    'if device.type == "cuda":\n',
+    '    print(f"GPU: {torch.cuda.get_device_name(0)}")',
+]))
+
+cells.append(code('c09', [
+    'def make_loader(X, y, batch_size=256, shuffle=True):\n',
+    '    tx = torch.tensor(X, dtype=torch.float32)\n',
+    '    ty = torch.tensor(y, dtype=torch.long)\n',
+    '    return DataLoader(TensorDataset(tx, ty), batch_size=batch_size, shuffle=shuffle)\n',
+    '\n',
+    'train_loader = make_loader(X_train, y_train)\n',
+    'test_loader  = make_loader(X_test,  y_test, shuffle=False)',
+]))
+
+cells.append(code('c10', [
+    'class MLP_PyTorch(nn.Module):\n',
+    '    """Misma arquitectura que MLP_NumPy, con autograd y soporte GPU."""\n',
+    '\n',
+    '    def __init__(self, dims):\n',
+    '        super().__init__()\n',
+    '        capas = []\n',
+    '        for i in range(len(dims)-1):\n',
+    '            capas.append(nn.Linear(dims[i], dims[i+1]))\n',
+    '            if i < len(dims) - 2:\n',
+    '                capas.append(nn.Sigmoid())\n',
+    '        # Ultima capa lineal: CrossEntropyLoss incluye Softmax internamente\n',
+    '        self.red = nn.Sequential(*capas)\n',
+    '\n',
+    '    def forward(self, x):\n',
+    '        return self.red(x)',
+]))
+
+cells.append(code('c11', [
+    'def entrenar_pytorch(model, loader_train, loader_test, epochs=20, lr=0.1):\n',
+    '    model     = model.to(device)\n',
+    '    criterion = nn.CrossEntropyLoss()\n',
+    '    optimizer = torch.optim.SGD(model.parameters(), lr=lr)\n',
+    '    hist      = {"loss": [], "acc": [], "val_acc": []}\n',
+    '\n',
+    '    for epoch in range(1, epochs+1):\n',
+    '        model.train()\n',
+    '        epoch_loss, correct, total = 0.0, 0, 0\n',
+    '        for Xb, yb in loader_train:\n',
+    '            Xb, yb = Xb.to(device), yb.to(device)\n',
+    '            optimizer.zero_grad()         # 1. limpiar gradientes\n',
+    '            y_hat = model(Xb)             # 2. forward\n',
+    '            loss  = criterion(y_hat, yb)  # 3. perdida\n',
+    '            loss.backward()               # 4. backward (autograd)\n',
+    '            optimizer.step()              # 5. actualizar pesos\n',
+    '            epoch_loss += loss.item() * len(yb)\n',
+    '            correct    += (y_hat.argmax(1) == yb).sum().item()\n',
+    '            total      += len(yb)\n',
+    '\n',
+    '        model.eval()\n',
+    '        vc, vt = 0, 0\n',
+    '        with torch.no_grad():\n',
+    '            for Xb, yb in loader_test:\n',
+    '                Xb, yb = Xb.to(device), yb.to(device)\n',
+    '                vc += (model(Xb).argmax(1) == yb).sum().item()\n',
+    '                vt += len(yb)\n',
+    '\n',
+    '        l, a, va = epoch_loss/total, correct/total, vc/vt\n',
+    '        hist["loss"].append(l); hist["acc"].append(a); hist["val_acc"].append(va)\n',
+    '        print(f"Epoca {epoch:2d}  loss={l:.4f}  acc={a:.4f}  val_acc={va:.4f}")\n',
+    '\n',
+    '    return hist',
+]))
+
+cells.append(code('c12', [
+    'device = torch.device("cpu")\n',
+    'print(f"=== Entrenando en: {device} ===")\n',
+    'torch.manual_seed(42)\n',
+    'model_cpu = MLP_PyTorch([784, 256, 128, 10])\n',
+    't0 = time.time()\n',
+    'hist_cpu = entrenar_pytorch(model_cpu, train_loader, test_loader)\n',
+    't_cpu = time.time() - t0\n',
+    'print(f"Tiempo CPU: {t_cpu:.1f}s")',
+]))
+
+cells.append(code('c13', [
+    'if torch.cuda.is_available():\n',
+    '    device = torch.device("cuda")\n',
+    '    print(f"=== GPU: {torch.cuda.get_device_name(0)} ===")\n',
+    '    torch.manual_seed(42)\n',
+    '    model_gpu = MLP_PyTorch([784, 256, 128, 10])\n',
+    '    t0 = time.time()\n',
+    '    hist_gpu = entrenar_pytorch(model_gpu, train_loader, test_loader)\n',
+    '    t_gpu = time.time() - t0\n',
+    '    print(f"Tiempo GPU: {t_gpu:.1f}s  |  Speedup vs CPU: {t_cpu/t_gpu:.1f}x")\n',
+    'else:\n',
+    '    print("GPU no disponible.")\n',
+    '    hist_gpu, t_gpu = None, None',
+]))
+
+cells.append(md('c14', ['---\n', '## Parte 3 -- Comparacion final']))
+
+cells.append(code('c15', [
+    'fig, axes = plt.subplots(1, 2, figsize=(14, 5))\n',
+    'for ax, metric, title in zip(axes, ["loss", "val_acc"], ["Perdida", "Accuracy (Test)"]):\n',
+    '    ax.plot(hist_np[metric],  "b-o", markersize=4, label="NumPy (CPU)")\n',
+    '    ax.plot(hist_cpu[metric], "g-s", markersize=4, label="PyTorch (CPU)")\n',
+    '    if hist_gpu:\n',
+    '        ax.plot(hist_gpu[metric], "r-^", markersize=4, label="PyTorch (GPU)")\n',
+    '    ax.set(title=title, xlabel="Epoca"); ax.grid(alpha=.3); ax.legend()\n',
+    'plt.suptitle("NumPy vs PyTorch CPU vs PyTorch GPU", fontsize=13, fontweight="bold")\n',
+    'plt.tight_layout(); plt.show()\n',
+    '\n',
+    'k = "val_acc"\n',
+    'sep = "=" * 50\n',
+    'print(sep)\n',
+    'print(f"  NumPy   (CPU)  acc={hist_np[k][-1]:.4f}  t={t_numpy:.1f}s")\n',
+    'print(f"  PyTorch (CPU)  acc={hist_cpu[k][-1]:.4f}  t={t_cpu:.1f}s")\n',
+    'if hist_gpu:\n',
+    '    print(f"  PyTorch (GPU)  acc={hist_gpu[k][-1]:.4f}  t={t_gpu:.1f}s  speedup={t_cpu/t_gpu:.1f}x")\n',
+    'print(sep)',
+]))
+
+cells.append(md('c16', ['---\n', '## Visualizacion: ejemplos mal clasificados']))
+
+cells.append(code('c17', [
+    'y_pred_np = np.argmax(mlp_np.forward(X_test), axis=1)\n',
+    'errores   = np.where(y_pred_np != y_test)[0]\n',
+    '\n',
+    'fig, axes = plt.subplots(2, 8, figsize=(14, 4))\n',
+    'for ax, idx in zip(axes.flat, errores[:16]):\n',
+    '    ax.imshow(X_test[idx].reshape(28, 28), cmap="gray")\n',
+    '    ax.set_title(f"R:{y_test[idx]} P:{y_pred_np[idx]}", fontsize=8)\n',
+    '    ax.axis("off")\n',
+    'plt.suptitle("Ejemplos mal clasificados (NumPy MLP)", fontsize=12)\n',
+    'plt.tight_layout(); plt.show()',
+]))
+
+nb = {
+    'nbformat': 4,
+    'nbformat_minor': 5,
+    'metadata': {
+        'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'},
+        'language_info': {'name': 'python', 'version': '3.13.0'},
+    },
+    'cells': cells,
+}
+
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(nb, f, indent=1, ensure_ascii=True)
+
+print(f'OK - {len(cells)} celdas escritas')
